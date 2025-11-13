@@ -1,0 +1,62 @@
+#include <SimpleDHT.h>
+
+// === Pin-definities ===
+const int pinDHT = 2;    // digitale pin voor RHT03 data
+const int pinLight = A1; // analoge pin voor Grove light sensor
+
+// === Library objecten ===
+SimpleDHT22 dht22;
+
+// === Sensorinstellingen ===
+const float VCC = 3.3;          // voedingsspanning
+const float MAX_VOLT = 0.57;    // maximale gemeten spanning bij volle belichting
+const float MAX_LUX = 400.0;    // schatting: volle belichting ≈ 400 lux
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);
+  Serial.println("\nStart RHT03 + Grove Light test (met aangepaste calibratie)");
+  delay(2000);
+}
+
+void loop() {
+  byte temperature = 0;
+  byte humidity = 0;
+
+  // === RHT03 uitlezen ===
+  int err = dht22.read(pinDHT, &temperature, &humidity, NULL);
+
+  // === Licht uitlezen ===
+  int lightRaw = analogRead(pinLight);      // 0..4095 (MKR1010 = 12-bit ADC)
+  float voltage = (lightRaw / 4095.0) * VCC;
+
+  // === Lux berekenen ===
+  float lux = (voltage / MAX_VOLT) * MAX_LUX;
+  if (lux > MAX_LUX) lux = MAX_LUX; // afkappen op max
+
+  // === Print resultaten ===
+  if (err == SimpleDHTErrSuccess) {
+    Serial.print("✅ Temp: ");
+    Serial.print((int)temperature);
+    Serial.print(" °C\tVocht: ");
+    Serial.print((int)humidity);
+    Serial.print(" %\t");
+  } else {
+    Serial.print("❌ Fout uitlezen RHT03 (code ");
+    Serial.print(err);
+    Serial.print(")\t");
+  }
+
+  Serial.print("Licht: ");
+  if (lux >= MAX_LUX) {
+    Serial.print("> ");
+    Serial.print(MAX_LUX, 0);
+  } else {
+    Serial.print(lux, 1);
+  }
+  Serial.print(" lux\t(");
+  Serial.print(voltage, 2);
+  Serial.println(" V)");
+
+  delay(5000);
+}
