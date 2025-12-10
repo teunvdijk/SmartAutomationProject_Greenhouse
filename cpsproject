@@ -1,0 +1,153 @@
+import serial
+import time
+import json
+import csv
+import threading
+import os
+from datetime import datetime
+
+# ==========================================
+# INSTELLINGEN (PAS DIT AAN!)
+# ==========================================
+SERIAL_PORT = 'COM20'   # <--- Check je Arduino poort in Apparaatbeheer!
+BAUD_RATE = 9600
+
+# ==========================================
+# BESTANDSLOCATIE FIX
+# ==========================================
+# 1. Zoek de map waar DIT script staat
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# 2. Plak de bestandsnaam erachteraan
+FILENAME = os.path.join(script_dir, 'cps_data_log.csv')
+
+print("\n" + "="*60)
+print(f"📁 HET BESTAND WORDT HIER OPGESLAGEN:")
+print(f"   {FILENAME}")
+print("="*60 + "\n")
+
+# ==========================================
+# SERIËLE VERBINDING STARTEN
+# ==========================================
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    print(f"✅ Verbonden met {SERIAL_PORT}")
+    # Even wachten tot Arduino reset klaar is
+    time.sleep(2) 
+except serial.SerialException:
+    print(f"❌ KAN POORT {SERIAL_PORT} NIET OPENEN.")
+    print("   -> Staat de Arduino IDE Serial Monitor nog open? Sluit die!")
+    print("   -> Heb je de juiste COM-poort ingevuld?")
+    exit()
+
+# ==========================================
+# FUNCTIE: CSV BESTAND KLAARZETTEN
+# ==========================================
+def setup_csv():
+    # We proberen het bestand meteen aan te maken of te openen
+    if not os.path.isfile(FILENAME):
+        try:
+            with open(FILENAME, mode='w', newline='') as file:
+                writer = csv.writer(file, delimiter=';') 
+                # Koppen van de kolommen
+                writer.writerow(["Timestamp_PC", "Node_ID", "Status", "Lumen", "Temp_C", "Pressure_Pa", "Fan_Speed"])
+            print("✅ Nieuw CSV bestand succesvol aangemaakt!")
+        except PermissionError:
+            print("\n❌ FOUT: Kan bestand niet maken!")
+            print("   -> Staat 'cps_data_log.csv' open in Excel? SLUIT EXCEL!\n")
+    else:
+        print("ℹ️  CSV bestand gevonden, nieuwe data wordt toegevoegd.")
+
+# ==========================================
+# FUNCTIE: DATA LEZEN & OPSLAAN (ACHTERGROND)
+# ==========================================
+def read_from_arduino():
+    while True:
+        try:
+            if ser.in_waiting > 0:
+                # 1. Lees regel van USB
+                raw_line = ser.readline().decode('utf-8', errors='ignore').strip()
+                
+                # Sla lege regels of debug berichten over
+                if not raw_line.startswith('{'):
+                    if raw_line: print(f"[Arduino Msg]: {raw_line}")
+                    continue
+
+                # 2. Parse JSON
+                try:
+                    data = json.loads(raw_line)
+                    
+                    # Haal waardes op uit JSON (met veilige defaults)
+                    node_id = data.get("ID", 1)
+                    # Status omzetten: 1 = OK, 0 = ERROR
+                    stat = "OK" if data.get("Stat", 1) == 1 else "ERROR"
+                    lum = data.get("Lum", 0)
+                    temp = data.get("Temp", 0.0)
+                    pres = data.get("Pres", 0)
+                    fan = data.get("Fan", 0)
+                    
+                    # Tijd van de PC toevoegen
+                    pc_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                    # 3. Toon op Scherm
+                    print(f"📊 [{pc_time}] Temp: {temp}°C | Druk: {pres} Pa | Licht: {lum} | Fan: {fan}")
+
+                    # 4. Opslaan in CSV
+                    with open(FILENAME, mode='a', newline='') as file:
+                        writer = csv.writer(file, delimiter=';')
+                        writer.writerow([pc_time, node_id, stat, lum, temp, pres, fan])
+
+                except json.JSONDecodeError:
+                    pass # Negeer halve/kapotte regels
+                except PermissionError:
+                    print("❌ FOUT: Kan niet opslaan. Excel staat open!")
+
+        except Exception as e:
+            print(f"Fout in lees-loop: {e}")
+            break
+        
+        # Klein beetje rust voor de CPU
+        time.sleep(0.01) 
+
+# ==========================================
+# HOOFDPROGRAMMA (BESTURING)
+# ==========================================
+def main_control_loop():
+    print("\n--- EDGE DEVICE CONTROLLER ---")
+    print("Typ een commando en druk op ENTER:")
+    print("  't' -> Test Mode (Drempel 20C - Fan waarschijnlijk AAN)")
+    print("  'y' -> Cool Mode (Drempel 30C - Fan waarschijnlijk UIT)")
+    print("  'r' -> Reset Mode (Drempel 25C - Normaal)")
+    print("  'q' -> Stoppen")
+    print("------------------------------\n")
+
+    # Start de luister-thread in de achtergrond
+    thread = threading.Thread(target=read_from_arduino)
+    thread.daemon = True 
+    thread.start()
+
+    # Wacht op input van gebruiker
+    while True:
+        try:
+            user_input = input() 
+            
+            if user_input.lower() == 'q':
+                print("Afsluiten...")
+                ser.close()
+                break
+            
+            if user_input in ['t', 'y', 'r']:
+                ser.write(user_input.encode()) # Stuur letter naar Arduino
+                print(f"📨 Commando '{user_input}' verstuurd!")
+            else:
+                print("⚠️  Onbekend commando. Probeer t, y, r of q.")
+                
+        except KeyboardInterrupt:
+            # Vang Ctrl+C op
+            print("\nAfsluiten...")
+            ser.close()
+            break
+
+if __name__ == "__main__":
+    setup_csv()
+    main_control_loop()
